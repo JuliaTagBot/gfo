@@ -1,0 +1,7 @@
+2016-10-31  Deniz Yuret  <dyuret@ku.edu.tr>
+
+	* mnist: predicting gradient at 0.  linreg > logreg > perceptron >
+	spsa in terms of convergence speed.  l2 is useless, l1 gives a
+	slight advantage.  explore active learning next.
+
+
