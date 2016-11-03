@@ -1,3 +1,13 @@
+2016-11-02  Deniz Yuret  <dyuret@ku.edu.tr>
+
+	* gradvar: Look at the variance in gradient across different
+	minibatches for different minibatch sizes as well as across
+	different steps of the SGD algorithm.
+
+	* l1reg: L1 regularization should never change the sign of a
+	coefficient.  Implementing this may allow us to use higher L1
+	coefficients.
+
 2016-10-31  Deniz Yuret  <dyuret@ku.edu.tr>
 
 	* mnist: predicting gradient at 0.  linreg > logreg > perceptron >

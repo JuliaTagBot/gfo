@@ -10,12 +10,76 @@
 # it may not be possible to beat random vector.
 
 using Knet
-include(Knet.dir("examples/mnist.jl"))
-using MNIST: minibatch,xtst,ytst
+isdefined(:MNIST) || include(Knet.dir("examples/mnist.jl"))
+using MNIST: minibatch,xtst,ytst,xtrn,ytrn
 (x0,y0) = minibatch(xtst, ytst, 10000; atype=KnetArray{Float32})[1]
 loss(w) = -sum(y0 .* logp(w*x0,1))/size(y0,2)
 gloss = grad(loss)
 
+function gfo(; batch=100, lr=0.1, epochs=10, atype=KnetArray{Float32}, wstd=1e-6, wlr=1, wl1=1e-14)
+    dtrn = minibatch(xtrn,ytrn,batch;atype=atype)
+    dtst = minibatch(xtst,ytst,length(ytst);atype=atype)
+    f(w,x,y) = -sum(y .* logp(w*x,1))/size(y,2); g = grad(f)
+    w = convert(atype, zeros(10,784)); rw = similar(w); gpred = copy(w)
+    println((0, mean([f(w,x,y) for (x,y) in dtst])))
+    for epoch=1:epochs
+        for (x,y) in dtrn
+            f1 = f(w,x,y)
+            randn!(rw,0,wstd)
+            f2 = f(w+rw,x,y)
+            dfgold = f2-f1
+            dfpred = dot(gpred,rw)
+            gpred -= wlr*((dfpred-dfgold)*rw + wl1*sign(gpred))
+            # axpy!(-lr,g(w,x,y),w)
+            axpy!(-lr,gpred,w)
+        end
+        println((epoch,
+                 :loss, mean([f(w,x,y) for (x,y) in dtst]),
+                 :vcos, mean([ vcos(gpred,g(w,x,y)) for (x,y) in dtst]),
+                 :ngold, mean([ vecnorm(g(w,x,y)) for (x,y) in dtst]),
+                 :npred, vecnorm(gpred),
+                 ))
+    end
+end
+
+function sgd(; batch=100, lr=batch/1000, epochs=10, atype=KnetArray{Float32})
+    dtrn = minibatch(xtrn,ytrn,batch;atype=atype)
+    dtst = minibatch(xtst,ytst,length(ytst);atype=atype)
+    f(w,x,y) = -sum(y .* logp(w*x,1))/size(y,2)
+    g = grad(f)
+    w = convert(atype, zeros(10,784))
+    println((0, mean([f(w,x,y) for (x,y) in dtst])))
+    for epoch=1:epochs
+        for (x,y) in dtrn
+            dw = g(w,x,y)
+            axpy!(-lr,dw,w)
+        end
+        losses = [ f(w,x,y) for (x,y) in dtst ]
+        println((epoch, mean([f(w,x,y) for (x,y) in dtst])))
+    end
+end
+
+# measure gradient variance
+function gradvar(n=100)
+    f(w,x,y) = -sum(y .* logp(w*x,1))/size(y,2)
+    g = grad(f)
+    data = minibatch(xtrn,ytrn,n; atype=Array{Float64})
+    grads = Any[]
+    w = oftype(data[1][1], zeros(10,784))
+    for (x,y) in data
+        push!(grads, g(w,x,y))
+    end
+    g0 = mean(grads)
+    cosine = Any[]
+    sqdiff = Any[]
+    for g in grads
+        push!(cosine, vcos(g,g0))
+        push!(sqdiff, sumabs2(g-g0))
+    end
+    (:cos, mean(cosine), :std, sqrt(mean(sqdiff)), :nrm, mean(map(vecnorm,grads)))
+end
+
+vcos(a,b)=dot(a,b)/(vecnorm(a)*vecnorm(b))
 
 function flinreg(w,x,y,l1,l2)
     lss = zero(eltype(w))
