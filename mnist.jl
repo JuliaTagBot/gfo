@@ -20,32 +20,45 @@ gloss = grad(loss)
 # TODO: update gpred and hpred based on f3, the move in gpred direction.
 # replacing the ad-hoc direction flip.
 
-function gfo(; batch=100, lr=.01f0, epochs=100, atype=KnetArray{Float32}, vstd=1e-5, lr_g=1.0, lr_h=0.0, hpred=0.0)
+function gfo(; batch=100, lr=.01f0, epochs=100, atype=KnetArray{Float32}, vstd=1e-5, lr_g=1.0, lr_h=1.0, hpred=1.0)
     Knet.rng(true)
     dtrn = minibatch(xtrn,ytrn,batch;atype=atype)
     dtst = minibatch(xtst,ytst,length(ytst);atype=atype)
     f(w,x,y) = -sum(y .* logp(w*x,1))/size(y,2); g = grad(f)
-    w = convert(atype, zeros(10,784)); v = similar(w); gpred = copy(w); lr0=lr
+    w = convert(atype, zeros(10,784)); vrnd = similar(w); gpred = copy(w); lr0=lr
     println((0, mean(f(w,x,y) for (x,y) in dtst)))
     for epoch=1:epochs
         for (x,y) in dtrn
-            f1 = f(w,x,y)
-            randn!(v,0,vstd)
-            v2 = sumabs2(v)
-            f2 = f(w+v,x,y)
-            dfgold = f2-f1
-            dfpred = dot(gpred,v) + 0.5 * hpred * v2
+            f0 = f(w,x,y)
+
+            # adjust gpred using random step
+            v = randn!(vrnd,0,vstd)
+            vv = sumabs2(v)
+            w1 = w+v
+            f1 = f(w1,x,y)
+            dfgold = f1-f0
+            dfpred = dot(gpred,v) # + 0.5 * hpred * vv: hpred only accurate in gpred direction, v is small etc.
             delta = (dfpred - dfgold)
-            gpred -= (lr_g * delta / (2*v2)) * v
-            hpred -= (lr_h * delta * 2 / v2)
-            # axpy!(-lr,g(w,x,y),w)
-            f3 = f(w-lr*gpred,x,y)
-            if f3 < f1
-                axpy!(-lr,gpred,w)
+            gpred -= (lr_g * delta / (2*vv)) * v
+            # hpred -= (lr_h * delta / vv)
+
+            # adjust hpred using newton step
+            v = (-1/hpred)*gpred
+            vv = sumabs2(v)
+            w2 = w+v
+            f2 = f(w2,x,y)
+            dfgold = f2-f0
+            dfpred = dot(gpred,v) + 0.5 * hpred * vv
+            delta = (dfpred - dfgold)
+            gpred -= (lr_g * delta / (2*vv)) * v
+            hpred -= (lr_h * delta / vv)
+
+            if f2 < f0
+                axpy!(-1/hpred, gpred, w)
             else
                 gpred *= -1
                 lr *= 0.99f0
-                lr < (1e-6) && (lr=lr0)
+                lr < (1e-6) && (lr=lr0; fill!(gpred,0))
             end
         end
         println((epoch,
