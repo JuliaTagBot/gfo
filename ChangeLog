@@ -1,3 +1,10 @@
+2016-11-04  Deniz Yuret  <dyuret@ku.edu.tr>
+
+	* mnist.jl (gloss): hpred keeps decreasing even though if we are
+	doing worse (delta = dfpred-dfgold < 0) it should increase
+	(i.e. lr=1/hpred should decrease).  While debugging that I started
+	getting NaNs.
+
 2016-11-02  Deniz Yuret  <dyuret@ku.edu.tr>
 
 	* gradvar: Look at the variance in gradient across different

@@ -20,13 +20,20 @@ gloss = grad(loss)
 # TODO: update gpred and hpred based on f3, the move in gpred direction.
 # replacing the ad-hoc direction flip.
 
-function gfo(; batch=100, lr=.01f0, epochs=100, atype=KnetArray{Float32}, vstd=1e-5, lr_g=1.0, lr_h=1.0, hpred=1.0)
+function gfo(; batch=100, lr=.01f0, epochs=100, atype=KnetArray{Float32}, vstd=1e-5, lr_g=1.0, lr_h=0.01, hpred=0.1)
     Knet.rng(true)
     dtrn = minibatch(xtrn,ytrn,batch;atype=atype)
     dtst = minibatch(xtst,ytst,length(ytst);atype=atype)
-    f(w,x,y) = -sum(y .* logp(w*x,1))/size(y,2); g = grad(f)
-    w = convert(atype, zeros(10,784)); vrnd = similar(w); gpred = copy(w); lr0=lr
-    println((0, mean(f(w,x,y) for (x,y) in dtst)))
+    f(w,x,y) = -sum(y .* logp(w*x,1))/size(y,2); gradf = grad(f)
+    w = convert(atype, zeros(10,784)); vrnd = similar(w); gpred = copy(w); lr0=lr; hpred0=hpred
+    report(epoch)=println((epoch,
+                           :lr,lr,
+                           :loss, mean(f(w,x,y) for (x,y) in dtst),
+                           :vcos, mean(vcos(gpred,gradf(w,x,y)) for (x,y) in dtst),
+                           :ggold, mean(vecnorm(gradf(w,x,y)) for (x,y) in dtst),
+                           :gpred, vecnorm(gpred), :hpred, hpred
+                           ))
+    report(0)
     for epoch=1:epochs
         for (x,y) in dtrn
             f0 = f(w,x,y)
@@ -39,7 +46,8 @@ function gfo(; batch=100, lr=.01f0, epochs=100, atype=KnetArray{Float32}, vstd=1
             dfgold = f1-f0
             dfpred = dot(gpred,v) # + 0.5 * hpred * vv: hpred only accurate in gpred direction, v is small etc.
             delta = (dfpred - dfgold)
-            gpred -= (lr_g * delta / (2*vv)) * v
+            gpred -= (lr_g * delta / vv) * v
+            # gpred -= (lr_g * delta / (2*vv)) * v
             # hpred -= (lr_h * delta / vv)
 
             # adjust hpred using newton step
@@ -49,25 +57,28 @@ function gfo(; batch=100, lr=.01f0, epochs=100, atype=KnetArray{Float32}, vstd=1
             f2 = f(w2,x,y)
             dfgold = f2-f0
             dfpred = dot(gpred,v) + 0.5 * hpred * vv
+            dfpred <= 0 || (report(epoch); error("dfpred=$dfpred f2=$f2 f0=$f0"))
             delta = (dfpred - dfgold)
-            gpred -= (lr_g * delta / (2*vv)) * v
-            hpred -= (lr_h * delta / vv)
-
-            if f2 < f0
-                axpy!(-1/hpred, gpred, w)
+            hpred2 = hpred - (lr_h * delta / vv)
+            if 0.01 < hpred2 < 100.0    # do not let hpred get too small or big
+                hpred = hpred2
+            end
+            if f2 <= f0
+                w = w2
+                gpred += (hpred - lr_g * delta / (2*vv)) * v
+                # gpred -= (lr_g * delta / (2*vv)) * v
+                # gpred += hpred * v    # we assume hpred stays constant, but gpred should be updated after the step
             else
-                gpred *= -1
-                lr *= 0.99f0
-                lr < (1e-6) && (lr=lr0; fill!(gpred,0))
+                fill!(gpred,0)
+                delta < 0 || error("delta=$delta")
+                # (0.01<hpred<100) && (hpred -= (lr_h * delta / vv))
+                # hpred = hpred0
+                # gpred *= -1
+                # lr *= 0.99f0
+                # lr < (1e-6) && (lr=lr0; fill!(gpred,0))
             end
         end
-        println((epoch,
-                 :lr,lr,
-                 :loss, mean(f(w,x,y) for (x,y) in dtst),
-                 :vcos, mean(vcos(gpred,g(w,x,y)) for (x,y) in dtst),
-                 :ggold, mean(vecnorm(g(w,x,y)) for (x,y) in dtst),
-                 :gpred, vecnorm(gpred), :hpred, hpred
-                 ))
+        report(epoch)
     end
 end
 
