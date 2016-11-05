@@ -1,3 +1,11 @@
+2016-11-05  Deniz Yuret  <dyuret@ku.edu.tr>
+
+	* mnist.jl (gloss): large steps that do well on a minibatch hurt
+	the overall performance.  Small lr (0.05) necessary for continued
+	progress.  hpred stable around 0.002 in later epochs.  hpred and w
+	both like to change slowly.  Next put some momentum on gpred.
+	Best results so far can get to 0.38 loss in 100 epochs.
+
 2016-11-04  Deniz Yuret  <dyuret@ku.edu.tr>
 
 	* mnist.jl (gloss): hpred keeps decreasing even though if we are

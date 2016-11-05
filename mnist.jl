@@ -20,67 +20,121 @@ gloss = grad(loss)
 # TODO: update gpred and hpred based on f3, the move in gpred direction.
 # replacing the ad-hoc direction flip.
 
-function gfo(; batch=100, lr=.01f0, epochs=100, atype=KnetArray{Float32}, vstd=1e-5, lr_g=1.0, lr_h=0.01, hpred=0.1)
+function gfo(w=nothing; batch=100, epochs=100, atype=KnetArray{Float64}, vstd=1e-5, lr_g=1.0, lr_h=1.0, hpred=0.01, pr=0, lr=0.05, decay=0.8)
     Knet.rng(true)
     dtrn = minibatch(xtrn,ytrn,batch;atype=atype)
     dtst = minibatch(xtst,ytst,length(ytst);atype=atype)
     f(w,x,y) = -sum(y .* logp(w*x,1))/size(y,2); gradf = grad(f)
-    w = convert(atype, zeros(10,784)); vrnd = similar(w); gpred = copy(w); lr0=lr; hpred0=hpred
-    report(epoch)=println((epoch,
-                           :lr,lr,
-                           :loss, mean(f(w,x,y) for (x,y) in dtst),
-                           :vcos, mean(vcos(gpred,gradf(w,x,y)) for (x,y) in dtst),
-                           :ggold, mean(vecnorm(gradf(w,x,y)) for (x,y) in dtst),
-                           :gpred, vecnorm(gpred), :hpred, hpred
-                           ))
+    w==nothing && (w = convert(atype, zeros(10,784)))
+    vrnd = zeros(w); gpred = zeros(w); hpred0=hpred; lr0=lr; loss0=loss1=Inf
+    report(epoch)=println(map((epoch,
+                               :lr, lr,
+                               :loss, mean(f(w,x,y) for (x,y) in dtst),
+                               :vcos, mean(vcos(gpred,gradf(w,x,y)) for (x,y) in dtst),
+                               :ggold, mean(vecnorm(gradf(w,x,y)) for (x,y) in dtst),
+                               :gpred, vecnorm(gpred), :hpred, hpred
+                               )) do x; isa(x,AbstractFloat) ? parse(@sprintf("%g",x)) : x; end)
     report(0)
+    approx(a,b)=isapprox(a,b;rtol=1e-3,atol=1e-12)
     for epoch=1:epochs
         for (x,y) in dtrn
             f0 = f(w,x,y)
+            g0 = gradf(w,x,y)
 
-            # adjust gpred using random step
+            # adjust direction using small random step
             v = randn!(vrnd,0,vstd)
             vv = sumabs2(v)
             w1 = w+v
             f1 = f(w1,x,y)
             dfgold = f1-f0
-            dfpred = dot(gpred,v) # + 0.5 * hpred * vv: hpred only accurate in gpred direction, v is small etc.
+            dfpred = dot(gpred,v)
             delta = (dfpred - dfgold)
+            vcos1 = vcos(g0,gpred)
             gpred -= (lr_g * delta / vv) * v
+            vcos2 = vcos(g0,gpred)
+            approx(dfgold, dot(gpred,v)) || error("dfgold1=$dfgold dfpred1=$(dot(gpred,v))")
+
+            # adjust size using small g step
+            v = (-vecnorm(v)/vecnorm(gpred))*gpred
+            approx(vv, sumabs2(v)) || error("vv=$vv sumabs2(v)=$(sumabs2(v))")
+            w2 = w+v
+            f2 = f(w2,x,y)
+            # f2 < f0 || warn("f0=$f0 f2=$f2") # f may not decrease when w changes
+            dfgold = f2-f0
+            dfpred = dot(gpred,v)
+            delta = (dfpred - dfgold)
+            size1 = vecnorm(gpred)
+            size0 = abs(dot(g0,gpred)/size1)
+            gpred -= (lr_g * delta / vv) * v
+            approx(dfgold, dot(gpred,v)) || error("dfgold2=$dfgold dfpred2=$(dot(gpred,v))")
+            size2 = vecnorm(gpred)
+            isapprox(size2, size0, rtol=.1, atol=1e-5) || error("size0=$size0 size2=$size2")
+
+            # adjust curvature using newton step
+            v = (-1/hpred)*gpred
+            vv = sumabs2(v)
+            w3 = w+v
+            f3 = f(w3,x,y)
+            dfgold = f3-f0
+            dfpred = dot(gpred,v) + 0.5 * hpred * vv
+            dfpred < 0 || error("dfpred3=$dfpred dot=$(dot(gpred,v)) hpred=$hpred vv=$vv")
+            delta = (dfpred - dfgold) # =0.5*(hpred-hgold)*vv
+            hpred1 = hpred
+            hpred2 = hpred - (2 * delta / vv)
+            approx(dfgold, dot(gpred,v)+0.5*hpred2*vv) || error("dfgold3=$dfgold dfpred3=$(dot(gpred,v)+0.5*hpred2*vv)")
+            hpred3 = hpred - (lr_h * 2 * delta / vv)
+            if hpred2 >= 0 # 0.001
+                hpred = hpred2 # clamp(hpred3, 0.01, 10.0)
+            elseif hpred2 < 0
+                warn("hpred=$hpred hpred2=$hpred2 delta=$delta vv=$vv dfpred=$dfpred dfgold=$dfgold")
+            end
+
+            # finally take that step
+            v = (-lr/hpred)*gpred
+            w4 = w+v
+            f4 = f(w4,x,y)
+            if f4 <= f0
+                w = w4
+                gpred += hpred * v
+            else
+                warn("f0=$f0 f4=$f4 hpred=$hpred gpred=$(vecnorm(gpred))")
+            end
+
+            if epoch in pr
+                @printf("f=%g->%g vcos=%g->%g size=%g->%g curv=%g->%g delta=%g\n",
+                        f0,f4,vcos1,vcos2,size1,size2,hpred1,hpred2,delta)
+            end
+
             # gpred -= (lr_g * delta / (2*vv)) * v
             # hpred -= (lr_h * delta / vv)
 
-            # adjust hpred using newton step
-            v = (-1/hpred)*gpred
-            vv = sumabs2(v)
-            w2 = w+v
-            f2 = f(w2,x,y)
-            dfgold = f2-f0
-            dfpred = dot(gpred,v) + 0.5 * hpred * vv
-            dfpred <= 0 || (report(epoch); error("dfpred=$dfpred f2=$f2 f0=$f0"))
-            delta = (dfpred - dfgold)
-            hpred2 = hpred - (lr_h * delta / vv)
-            if 0.01 < hpred2 < 100.0    # do not let hpred get too small or big
-                hpred = hpred2
-            end
-            if f2 <= f0
-                w = w2
-                gpred += (hpred - lr_g * delta / (2*vv)) * v
-                # gpred -= (lr_g * delta / (2*vv)) * v
-                # gpred += hpred * v    # we assume hpred stays constant, but gpred should be updated after the step
-            else
-                fill!(gpred,0)
-                delta < 0 || error("delta=$delta")
-                # (0.01<hpred<100) && (hpred -= (lr_h * delta / vv))
-                # hpred = hpred0
-                # gpred *= -1
-                # lr *= 0.99f0
-                # lr < (1e-6) && (lr=lr0; fill!(gpred,0))
-            end
+            # if 0.01 < hpred2 < 100.0    # do not let hpred get too small or big
+            #     hpred = hpred2
+            # end
+            # if f2 <= f0
+            #     w = w2
+            #     gpred += (hpred - lr_g * delta / (2*vv)) * v
+            #     # gpred -= (lr_g * delta / (2*vv)) * v
+            #     # gpred += hpred * v    # we assume hpred stays constant, but gpred should be updated after the step
+            # else
+            #     fill!(gpred,0)
+            #     delta < 0 || error("delta=$delta")
+            #     # (0.01<hpred<100) && (hpred -= (lr_h * delta / vv))
+            #     # hpred = hpred0
+            #     # gpred *= -1
+            #     # lr *= 0.99f0
+            #     # lr < (1e-6) && (lr=lr0; fill!(gpred,0))
+            # end
         end
         report(epoch)
+        loss1 = mean(f(w,x,y) for (x,y) in dtst)
+        loss1 < loss0 || (lr *= decay)
+        loss0 = loss1
     end
+    return w
 end
+
+
 
 function sgd(; batch=100, lr=batch/1000, epochs=10, atype=KnetArray{Float32})
     dtrn = minibatch(xtrn,ytrn,batch;atype=atype)
