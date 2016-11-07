@@ -1,3 +1,16 @@
+2016-11-07  Deniz Yuret  <dyuret@ku.edu.tr>
+
+	* hypo: new hypothesis: large learning rates are not bad because
+	you overstep they are bad because you're stepping in a noisy
+	direction.  Even when we take good Newton steps every minibatch,
+	the overall performance gets worse.
+
+	We can try to write a version of SGD with real gradients of mini
+	batches that take little steps every time to confirm that it
+	doesn't work.  Then look at adam to see rates adjusted dynamically
+	and apply the idea to gfo.  Adam etc. build a diagonal Hessian
+	instead of a spherical Hessian, I think.
+
 2016-11-05  Deniz Yuret  <dyuret@ku.edu.tr>
 
 	* mnist.jl (gloss): large steps that do well on a minibatch hurt
