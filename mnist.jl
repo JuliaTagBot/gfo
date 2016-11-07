@@ -15,10 +15,9 @@ using MNIST: minibatch,xtst,ytst,xtrn,ytrn
 (x0,y0) = minibatch(xtst, ytst, 10000; atype=KnetArray{Float32})[1]
 loss(w) = -sum(y0 .* logp(w*x0,1))/size(y0,2)
 gloss = grad(loss)
+vcos(a,b)=dot(a,b)/(vecnorm(a)*vecnorm(b))
 
-# This version gets stuck around loss=0.5.
-# TODO: update gpred and hpred based on f3, the move in gpred direction.
-# replacing the ad-hoc direction flip.
+# This version gets stuck around loss=0.4 in 100 epochs with batch=100.
 
 function gfo(w=nothing; batch=100, epochs=100, atype=KnetArray{Float64}, vstd=1e-5, lr_g=1.0, lr_h=1.0, hpred=0.01, pr=0, lr=0.05, decay=0.8)
     Knet.rng(true)
@@ -135,22 +134,103 @@ function gfo(w=nothing; batch=100, epochs=100, atype=KnetArray{Float64}, vstd=1e
 end
 
 
+# SGD that takes a newton step in gradient direction every iteration:
+# gets stuck around 0.39 with lr=1.0.
+# gets stuck around 0.31 with lr=0.5.
+# gets stuck around 0.2775 with lr=0.1.
+# reaches 0.2721 with lr=0.1, decay=0.5.
+# vcos usually negative.
 
-function sgd(; batch=100, lr=batch/1000, epochs=10, atype=KnetArray{Float32})
+function supersgd(w=nothing; batch=100, epochs=100, atype=KnetArray{Float64}, hpred=0.4, pr=0, lr=1.0, decay=1.0)
+    Knet.rng(true)
+    dtrn = minibatch(xtrn,ytrn,batch;atype=atype)
+    dtst = minibatch(xtst,ytst,length(ytst);atype=atype)
+    f(w,x,y) = -sum(y .* logp(w*x,1))/size(y,2); gradf = grad(f)
+    w==nothing && (w = convert(atype, zeros(10,784)))
+    gpred = zeros(w); loss0=loss1=Inf
+    report(epoch)=println(map((epoch,
+                               :lr, lr,
+                               :loss, mean(f(w,x,y) for (x,y) in dtst),
+                               :vcos, mean(vcos(gpred,gradf(w,x,y)) for (x,y) in dtst),
+                               :ggold, mean(vecnorm(gradf(w,x,y)) for (x,y) in dtst),
+                               :gpred, vecnorm(gpred), :hpred, hpred
+                               )) do x; isa(x,AbstractFloat) ? parse(@sprintf("%g",x)) : x; end)
+    report(0)
+    approx(a,b)=isapprox(a,b;rtol=1e-3,atol=1e-12)
+    for epoch=1:epochs
+        for (x,y) in dtrn
+            f0 = f(w,x,y)
+            gpred = gradf(w,x,y)   # perfect direction and size, only need curvature
+
+            # adjust curvature using newton step
+            v = (-1/hpred)*gpred
+            vv = sumabs2(v)
+            w3 = w+v
+            f3 = f(w3,x,y)
+            dfgold = f3-f0
+            dfpred = dot(gpred,v) + 0.5 * hpred * vv
+            dfpred < 0 || error("dfpred3=$dfpred dot=$(dot(gpred,v)) hpred=$hpred vv=$vv")
+            delta = (dfpred - dfgold) # =0.5*(hpred-hgold)*vv
+            hpred1 = hpred
+            hpred2 = hpred - (2 * delta / vv)
+            approx(dfgold, dot(gpred,v)+0.5*hpred2*vv) || error("dfgold3=$dfgold dfpred3=$(dot(gpred,v)+0.5*hpred2*vv)")
+            if hpred2 >= 0 # 0.001
+                hpred = hpred2 # clamp(hpred3, 0.01, 10.0)
+            elseif hpred2 < 0
+                warn("hpred=$hpred hpred2=$hpred2 delta=$delta vv=$vv dfpred=$dfpred dfgold=$dfgold")
+            end
+
+            # finally take that step
+            v = (-lr/hpred)*gpred
+            w4 = w+v
+            f4 = f(w4,x,y)
+            if f4 <= f0
+                w = w4
+                # gpred += hpred * v
+            else
+                warn("f0=$f0 f4=$f4 hpred=$hpred gpred=$(vecnorm(gpred))")
+            end
+
+            if epoch in pr
+                @printf("f=%g->%g vcos=%g->%g size=%g->%g curv=%g->%g delta=%g\n",
+                        f0,f4,vcos1,vcos2,size1,size2,hpred1,hpred2,delta)
+            end
+
+        end
+        report(epoch)
+        loss1 = mean(f(w,x,y) for (x,y) in dtst)
+        loss1 < loss0 || (lr *= decay)
+        loss0 = loss1
+    end
+    return w
+end
+
+# gets to loss=0.2730 in 100 epochs with batch=100 lr=0.1
+# gets to loss=0.2715 with lr=0.1, decay=0.5.
+# vcos between test gradient and training minibatches is around 0.1.
+# vcos changes when lr changes, looks like a bug!
+
+function sgd(; batch=100, lr=0.1, epochs=100, atype=KnetArray{Float32}, decay=0.5)
     dtrn = minibatch(xtrn,ytrn,batch;atype=atype)
     dtst = minibatch(xtst,ytst,length(ytst);atype=atype)
     f(w,x,y) = -sum(y .* logp(w*x,1))/size(y,2)
     g = grad(f)
     w = convert(atype, zeros(10,784))
     println((0, mean([f(w,x,y) for (x,y) in dtst])))
+    loss1 = loss0 = Inf
     for epoch=1:epochs
+        vcos1 = Any[]
         for (x,y) in dtrn
             dw = g(w,x,y)
+            push!(vcos1, mean(vcos(dw,g(w,x,y)) for (x,y) in dtst))
             axpy!(-lr,dw,w)
         end
-        losses = [ f(w,x,y) for (x,y) in dtst ]
-        println((epoch, mean([f(w,x,y) for (x,y) in dtst])))
+        loss1 = mean([f(w,x,y) for (x,y) in dtst])
+        println((epoch, :lr, lr, :loss, loss1, :vcos, mean(vcos1)))
+        loss1 > loss0 && (lr *= decay)
+        loss0 = loss1
     end
+    return w
 end
 
 # measure gradient variance
@@ -173,7 +253,7 @@ function gradvar(n=100)
     (:cos, mean(cosine), :std, sqrt(mean(sqdiff)), :nrm, mean(map(vecnorm,grads)))
 end
 
-vcos(a,b)=dot(a,b)/(vecnorm(a)*vecnorm(b))
+
 
 function flinreg(w,x,y;l1=0,l2=0,l3=0)
     lss = zero(eltype(w))

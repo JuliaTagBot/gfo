@@ -1,5 +1,15 @@
 2016-11-07  Deniz Yuret  <dyuret@ku.edu.tr>
 
+	* mnist.jl (gloss): Failed to confirm the hypothesis with sgd.
+	Wrote supersgd:
+	# SGD that takes a newton step (-g/h) in gradient direction every iteration:
+	# gets stuck around 0.39 with lr=1.0.
+	# gets stuck around 0.31 with lr=0.5.
+	# gets stuck around 0.2775 with lr=0.1.
+	# reaches 0.2721 with lr=0.1, decay=0.5.
+	# vcos usually negative but (1) only for the last minibatch, (2) seems
+	to be effected from lr which it shouldn't.
+
 	* hypo: new hypothesis: large learning rates are not bad because
 	you overstep they are bad because you're stepping in a noisy
 	direction.  Even when we take good Newton steps every minibatch,
